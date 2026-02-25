@@ -1,6 +1,6 @@
-﻿using System.Net;
+﻿using System.Diagnostics;
+using System.Net;
 using System.Text;
-using System.Net.Sockets;
 
 const string PREFIX = "http://+:8080/"; // listen on all interfaces port 8080
 
@@ -49,7 +49,7 @@ static void HandleRequest(HttpListenerContext ctx)
         string? macAddress = req.QueryString["mac"];
         string? ipAddress = req.QueryString["ip"];
 
-        if (macAddress is null || ipAddress is null)
+        if (macAddress is null)
         {
             resp.StatusCode = 404;
             resp.Close();
@@ -82,10 +82,11 @@ static void HandleRequest(HttpListenerContext ctx)
     }
 }
 
-static bool SendWakeOnLan(string macAddress, string ipAddress, out string result)
+static bool SendWakeOnLan(string macAddress, string? ipAddress, out string result)
 {
     try
     {
+        // Validate MAC quickly
         string[] parts = macAddress.Split([':', '-'], StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length != 6)
         {
@@ -93,54 +94,36 @@ static bool SendWakeOnLan(string macAddress, string ipAddress, out string result
             return false;
         }
 
-        byte[] macBytes = new byte[6];
-        for (int i = 0; i < 6; i++)
+        // Build command: wakeonlan [options] MAC
+        // macOS wakeonlan accepts MAC and optional -i IP (target IP/broadcast)
+        var psi = new ProcessStartInfo
         {
-            macBytes[i] = Convert.ToByte(parts[i], 16);
-        }
+            FileName = "/usr/bin/env",
+            ArgumentList = { "wakeonlan", macAddress },
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
 
-        byte[] packet = new byte[6 + 16 * 6];
-        for (int i = 0; i < 6; i++) packet[i] = 0xFF;
-        for (int i = 6; i < packet.Length; i += 6)
-            Buffer.BlockCopy(macBytes, 0, packet, i, 6);
-
-        using var udp = new UdpClient();
-        udp.EnableBroadcast = true;
-
-        // Try broadcast to 255.255.255.255 and port 9
-        udp.Send(packet, packet.Length, new IPEndPoint(IPAddress.Broadcast, 9));
-
-        // Also attempt to send to common subnet broadcast if IP_ADDRESS provided
+        // If an IP/broadcast provided, append -i <ip>
         if (!string.IsNullOrWhiteSpace(ipAddress))
         {
-            try
-            {
-                var ip = IPAddress.Parse(ipAddress);
-                var broadcast = GetSubnetBroadcast(ip);
-                udp.Send(packet, packet.Length, new IPEndPoint(broadcast!, 9));
-            }
-            catch
-            {
-                /* ignore */
-            }
+            psi.ArgumentList.Add("-i");
+            psi.ArgumentList.Add(ipAddress);
         }
 
-        result = "magic packet sent";
-        return true;
+        using var p = Process.Start(psi)!;
+        string stdout = p.StandardOutput.ReadToEnd();
+        string stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+
+        result = $"exit={p.ExitCode}\nstdout:{stdout}\nstderr:{stderr}";
+        return p.ExitCode == 0;
     }
     catch (Exception ex)
     {
         result = ex.ToString();
         return false;
     }
-}
-
-static IPAddress? GetSubnetBroadcast(IPAddress ip)
-{
-    // naive /24 broadcast calculation
-    if (ip.AddressFamily != AddressFamily.InterNetwork) 
-        return null;
-    byte[] bytes = ip.GetAddressBytes();
-    bytes[3] = 255;
-    return new IPAddress(bytes);
 }
