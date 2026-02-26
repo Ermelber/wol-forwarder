@@ -99,7 +99,7 @@ static bool SendWakeOnLan(string macAddress, string? ipAddress, out string resul
         var psi = new ProcessStartInfo
         {
             FileName = "/usr/bin/env",
-            ArgumentList = { "wakeonlan", macAddress },
+            ArgumentList = { "/opt/homebrew/bin/wakeonlan", macAddress },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
